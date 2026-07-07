@@ -699,6 +699,28 @@ check_cgroup_cpu_preflight() {
   Full repro and fix: https://github.com/TencentCloud/CubeSandbox/issues/366"
 }
 
+mount_bpf_filesystem() {
+  # If already mounted as bpf filesystem, nothing to do.
+  if mountpoint -q /sys/fs/bpf 2>/dev/null; then
+    local fstype
+    fstype="$(stat -fc %T /sys/fs/bpf 2>/dev/null || echo unknown)"
+    if [[ "${fstype}" == "bpf" ]]; then
+      log "/sys/fs/bpf is already mounted as bpf filesystem"
+      return 0
+    fi
+    log "WARNING: /sys/fs/bpf is mounted but filesystem type is '${fstype}', not 'bpf'"
+  fi
+
+  log "mounting BPF filesystem at /sys/fs/bpf"
+  mount -t bpf bpf /sys/fs/bpf || die "failed to mount BPF filesystem at /sys/fs/bpf"
+
+  # Persist across reboots via /etc/fstab.
+  if ! grep -q '^bpf[[:space:]]\+/sys/fs/bpf[[:space:]]\+bpf' /etc/fstab 2>/dev/null; then
+    printf 'bpf\t/sys/fs/bpf\tbpf\tdefaults\t0\t0\n' >> /etc/fstab
+    log "added /sys/fs/bpf to /etc/fstab for persistence across reboots"
+  fi
+}
+
 check_install_preflight() {
   # install.sh itself.
   require_cmd tar
@@ -924,6 +946,9 @@ check_hardware_preflight
 check_pvm_consistency_preflight
 check_cubelet_fs_preflight
 check_cgroup_cpu_preflight
+# Ensure BPF filesystem is mounted before installing dependencies.
+# This is an action (not a check); placed early for fast failure.
+mount_bpf_filesystem
 check_glibc_preflight
 check_compute_control_plane_preflight
 
