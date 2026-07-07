@@ -560,6 +560,7 @@ test_mount_bpf_filesystem_already_mounted_bpf() {
   [[ "${mount_called}" -eq 0 ]] || fail "mount should NOT be called when bpf already mounted"
   command grep -Fq "already mounted as bpf filesystem" "${mount_log}" \
     || fail "expected log to contain 'already mounted as bpf filesystem'"
+  unset -f grep mountpoint stat mount
 }
 
 test_mount_bpf_filesystem_mounted_as_non_bpf() {
@@ -576,6 +577,7 @@ test_mount_bpf_filesystem_mounted_as_non_bpf() {
   command grep -Fq "WARNING: /sys/fs/bpf is mounted but filesystem type is 'ext4'" "${mount_log}" \
     || fail "expected log to contain ext4 warning"
   [[ "${mount_args}" == "-t bpf bpf /sys/fs/bpf" ]] || fail "mount should be called with bpf args (got: ${mount_args})"
+  unset -f grep mountpoint stat mount
 }
 
 test_mount_bpf_filesystem_not_mounted() {
@@ -618,6 +620,7 @@ test_mount_bpf_filesystem_mount_fails() {
   fi
   command grep -Fq "failed to mount BPF filesystem at /sys/fs/bpf" "${mount_log}" \
     || fail "expected log to contain mount failure message"
+  unset -f grep mountpoint mount
 }
 
 test_install_sh_wires_upgrade_flow() {
@@ -673,11 +676,12 @@ test_upgrade_preflight_and_backup
 test_validation_library_fallback_die
 test_redis_cli_help_supports_flag
 test_run_with_timeout_if_available
+test_install_sh_wires_upgrade_flow
+
 test_mount_bpf_filesystem_already_mounted_bpf
 test_mount_bpf_filesystem_mounted_as_non_bpf
 test_mount_bpf_filesystem_not_mounted
 test_mount_bpf_filesystem_fstab_already_has_entry
 test_mount_bpf_filesystem_mount_fails
-test_install_sh_wires_upgrade_flow
 
 echo "install mode tests OK"
