@@ -521,6 +521,108 @@ test_run_with_timeout_if_available() {
   assert_contains "${direct_log}" "-h 127.0.0.1 -p 6389 ping"
 }
 
+# Source the mount_bpf_filesystem function definition from install.sh for
+# unit testing. install.sh cannot be sourced directly because it executes at
+# the top level; extract only the function body and define it in the test.
+mount_bpf_filesystem() {
+  # If already mounted as bpf filesystem, nothing to do.
+  if mountpoint -q /sys/fs/bpf 2>/dev/null; then
+    local fstype
+    fstype="$(stat -fc %T /sys/fs/bpf 2>/dev/null || echo unknown)"
+    if [[ "${fstype}" == "bpf" ]]; then
+      log "/sys/fs/bpf is already mounted as bpf filesystem"
+      return 0
+    fi
+    log "WARNING: /sys/fs/bpf is mounted but filesystem type is '${fstype}', not 'bpf'"
+  fi
+
+  log "mounting BPF filesystem at /sys/fs/bpf"
+  mount -t bpf bpf /sys/fs/bpf || die "failed to mount BPF filesystem at /sys/fs/bpf"
+
+  # Persist across reboots via /etc/fstab.
+  if ! grep -q '^bpf[[:space:]]\+/sys/fs/bpf[[:space:]]\+bpf' /etc/fstab 2>/dev/null; then
+    printf 'bpf\t/sys/fs/bpf\tbpf\tdefaults\t0\t0\n' >> /etc/fstab
+    log "added /sys/fs/bpf to /etc/fstab for persistence across reboots"
+  fi
+}
+
+test_mount_bpf_filesystem_already_mounted_bpf() {
+  # When /sys/fs/bpf is already a bpf filesystem, mount is skipped.
+  local mount_log="${TMP_DIR}/mount-bpf-already.log" mount_called=0
+  mountpoint() { [[ "${1:-}" == "-q" ]] && return 0; }
+  stat() { if [[ "${*}" == *"/sys/fs/bpf"* ]]; then echo "bpf"; else return 1; fi; }
+  mount() { mount_called=1; }
+  grep() { return 1; }
+
+  if ! mount_bpf_filesystem >"${mount_log}" 2>&1; then
+    fail "mount_bpf_filesystem should succeed when bpf already mounted"
+  fi
+  [[ "${mount_called}" -eq 0 ]] || fail "mount should NOT be called when bpf already mounted"
+  command grep -Fq "already mounted as bpf filesystem" "${mount_log}" \
+    || fail "expected log to contain 'already mounted as bpf filesystem'"
+  unset -f grep mountpoint stat mount
+}
+
+test_mount_bpf_filesystem_mounted_as_non_bpf() {
+  # When /sys/fs/bpf is mounted but not as bpf: warn, then mount bpf over it.
+  local mount_log="${TMP_DIR}/mount-bpf-nonbpf.log" mount_args=""
+  mountpoint() { [[ "${1:-}" == "-q" ]] && return 0; }
+  stat() { if [[ "${*}" == *"/sys/fs/bpf"* ]]; then echo "ext4"; else return 1; fi; }
+  mount() { mount_args="$*"; }
+  grep() { return 0; }
+
+  if ! mount_bpf_filesystem >"${mount_log}" 2>&1; then
+    fail "mount_bpf_filesystem should succeed when non-bpf fs is mounted"
+  fi
+  command grep -Fq "WARNING: /sys/fs/bpf is mounted but filesystem type is 'ext4'" "${mount_log}" \
+    || fail "expected log to contain ext4 warning"
+  [[ "${mount_args}" == "-t bpf bpf /sys/fs/bpf" ]] || fail "mount should be called with bpf args (got: ${mount_args})"
+  unset -f grep mountpoint stat mount
+}
+
+test_mount_bpf_filesystem_not_mounted() {
+  local mount_log="${TMP_DIR}/mount-bpf-fresh.log" mount_args=""
+  mountpoint() { return 1; }
+  mount() { mount_args="$*"; }
+  grep() { return 0; }
+
+  if ! mount_bpf_filesystem >"${mount_log}" 2>&1; then
+    fail "mount_bpf_filesystem should succeed when /sys/fs/bpf is not mounted"
+  fi
+  [[ "${mount_args}" == "-t bpf bpf /sys/fs/bpf" ]] || fail "mount should be called with bpf args (got: ${mount_args})"
+  command grep -Fq "mounting BPF filesystem at /sys/fs/bpf" "${mount_log}" \
+    || fail "expected log to contain mount message"
+}
+
+test_mount_bpf_filesystem_fstab_already_has_entry() {
+  # When /etc/fstab already contains the bpf entry, do not duplicate it.
+  local mount_log="${TMP_DIR}/mount-bpf-fstab-exists.log"
+  mountpoint() { return 1; }
+  mount() { :; }
+  grep() { return 0; }
+
+  if ! mount_bpf_filesystem >"${mount_log}" 2>&1; then
+    fail "mount_bpf_filesystem should succeed when fstab entry already exists"
+  fi
+  if command grep -Fq "added /sys/fs/bpf to /etc/fstab" "${mount_log}"; then
+    fail "should not add fstab entry when already present"
+  fi
+}
+
+test_mount_bpf_filesystem_mount_fails() {
+  local mount_log="${TMP_DIR}/mount-bpf-fail.log"
+  mountpoint() { return 1; }
+  mount() { return 1; }
+  grep() { return 1; }
+
+  if ( mount_bpf_filesystem ) >"${mount_log}" 2>&1; then
+    fail "mount_bpf_filesystem should fail when mount returns non-zero"
+  fi
+  command grep -Fq "failed to mount BPF filesystem at /sys/fs/bpf" "${mount_log}" \
+    || fail "expected log to contain mount failure message"
+  unset -f grep mountpoint mount
+}
+
 test_install_sh_wires_upgrade_flow() {
   local f="${ONE_CLICK_DIR}/install.sh"
   assert_contains "${f}" "resolve_install_mode"
@@ -574,6 +676,17 @@ test_upgrade_preflight_and_backup
 test_validation_library_fallback_die
 test_redis_cli_help_supports_flag
 test_run_with_timeout_if_available
+test_mount_bpf_filesystem_already_mounted_bpf
+test_mount_bpf_filesystem_mounted_as_non_bpf
+test_mount_bpf_filesystem_not_mounted
+test_mount_bpf_filesystem_fstab_already_has_entry
+test_mount_bpf_filesystem_mount_fails
 test_install_sh_wires_upgrade_flow
+
+test_mount_bpf_filesystem_already_mounted_bpf
+test_mount_bpf_filesystem_mounted_as_non_bpf
+test_mount_bpf_filesystem_not_mounted
+test_mount_bpf_filesystem_fstab_already_has_entry
+test_mount_bpf_filesystem_mount_fails
 
 echo "install mode tests OK"
